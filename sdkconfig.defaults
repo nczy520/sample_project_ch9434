@@ -1,0 +1,11 @@
+# ESP32-S3 target
+CONFIG_IDF_TARGET="esp32s3"
+
+# Use USB Serial/JTAG for console output (built-in USB on ESP32-S3 dev boards)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# Disable the legacy UART console so the on-board USB port is used
+CONFIG_ESP_CONSOLE_NONE=n
+
+# Lower log noise from boot
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
