@@ -4,6 +4,7 @@
  * Wires assumed:
  *   - UART0: TX0 -> RX0 (loopback on the breakout)
  *   - UART1: TX1 -> UART2: RX2
+ *   - UART2: TX2 -> UART1: RX1
  *
  * Test modes:
  *   - Random data test: sends random length (1-255) random bytes, runs 100 groups
@@ -149,6 +150,7 @@ void test_app_run(void)
     ESP_LOGI(TAG, "Test configuration:");
     ESP_LOGI(TAG, "  - UART0: TX0 <-> RX0 (loopback)");
     ESP_LOGI(TAG, "  - UART1: TX1 -> UART2: RX2 (cross-link)");
+    ESP_LOGI(TAG, "  - UART2: TX2 -> UART1: RX1 (cross-link reverse)");
     ESP_LOGI(TAG, "  - Baud rate: 115200 8N1");
     ESP_LOGI(TAG, "  - SPI clock: 200kHz");
     ESP_LOGI(TAG, "  - Test groups: %u", (unsigned)TEST_GROUP_COUNT);
@@ -176,14 +178,16 @@ void test_app_run(void)
     for (uint32_t group = 1; group <= TEST_GROUP_COUNT; group++) {
         uint16_t len0 = (uint16_t)((esp_random() % 255) + 1);
         uint16_t len12 = (uint16_t)((esp_random() % 255) + 1);
+        uint16_t len21 = (uint16_t)((esp_random() % 255) + 1);
 
         ESP_LOGI(TAG, "[%3u/%3u] ====== GROUP %3u ======",
                  (unsigned)group, (unsigned)TEST_GROUP_COUNT, (unsigned)group);
 
         bool ok0 = test_loopback_random(CH9434_UART0, len0, group);
         bool ok12 = test_cross_random(CH9434_UART1, CH9434_UART2, len12, group);
+        bool ok21 = test_cross_random(CH9434_UART2, CH9434_UART1, len21, group);
 
-        if (ok0 && ok12) {
+        if (ok0 && ok12 && ok21) {
             pass_count++;
             ESP_LOGI(TAG, "[%3u/%3u] RESULT: PASS", (unsigned)group, (unsigned)TEST_GROUP_COUNT);
         } else {
@@ -199,9 +203,9 @@ void test_app_run(void)
             ESP_LOGI(TAG, "[%3u/%3u] Total: %3u | PASS: %3u | FAIL: %3u | Rate: %3u%%",
                      (unsigned)group, (unsigned)TEST_GROUP_COUNT,
                      (unsigned)total, (unsigned)pass_count, (unsigned)fail_count, (unsigned)percent);
-            ESP_LOGI(TAG, "[%3u/%3u] Last sizes: U0=%4uB U1->U2=%4uB",
+            ESP_LOGI(TAG, "[%3u/%3u] Last sizes: U0=%4uB U1->U2=%4uB U2->U1=%4uB",
                      (unsigned)group, (unsigned)TEST_GROUP_COUNT,
-                     (unsigned)len0, (unsigned)len12);
+                     (unsigned)len0, (unsigned)len12, (unsigned)len21);
             ESP_LOGI(TAG, "[%3u/%3u] ---------------------------------------------",
                      (unsigned)group, (unsigned)TEST_GROUP_COUNT);
         }
