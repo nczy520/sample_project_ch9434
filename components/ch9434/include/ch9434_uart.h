@@ -1,7 +1,11 @@
 /*
- * CH9434 UART high-level API: chip init, sub-UART configuration and IO.
+ * CH9434 UART 高层 API：芯片初始化、子 UART 配置与 IO。
  *
- * Chip model: CH9434A timing (CH9434M is a repackaged CH9434A).
+ * 芯片型号：CH9434A 时序（CH9434M 是重新封装的 CH9434A）。
+ *
+ * 线程安全：此头文件中的所有入口函数（chip_init、set_config、
+ * write、read、available）都可以从多个 FreeRTOS 任务中并发安全
+ * 调用。SPI 访问由内部的专用服务任务串行化。
  */
 #ifndef CH9434_UART_H
 #define CH9434_UART_H
@@ -15,11 +19,11 @@
 extern "C" {
 #endif
 
-/* CH9434A serial port reference clock with the chip's default clock
- * configuration (clk_ctrl = 0x00): sys_frequency = 32 MHz. */
+/* CH9434A 串口参考时钟（芯片默认时钟配置下）：
+ * sys_frequency = 32 MHz。 */
 #define CH9434_SYS_FREQ_HZ                  32000000UL
 
-/* Public baud rate selection. Standard PC values. */
+/* 公共波特率选择值。标准 PC 常用值。 */
 typedef enum {
     CH9434_BAUD_1200    = 1200,
     CH9434_BAUD_2400    = 2400,
@@ -57,45 +61,45 @@ typedef struct {
     ch9434_databits_t data_bits;
     ch9434_stopbits_t stop_bits;
     ch9434_parity_t   parity;
-    bool              use_fifo;       /* enable 256-byte FIFO */
-    bool              hw_flow_ctrl;   /* enable auto RTS/CTS (where wired) */
+    bool              use_fifo;       /* 使能 256 字节 FIFO */
+    bool              hw_flow_ctrl;   /* 使能自动 RTS/CTS（已接线时） */
 } ch9434_uart_config_t;
 
 /**
- * Initialise the CH9434 chip.
+ * 初始化 CH9434 芯片。
  *
- * Performs the SPI bus init, then runs the recommended startup sequence
- * (clock-mode register write + delay) and validates communication by
- * writing 0x55 to the UART0 scratch register and reading it back.
+ * 执行 SPI 总线初始化，然后运行推荐的启动序列
+ * （时钟模式寄存器写入 + 延迟），并通过向 UART0 暂存寄存器
+ * 写入 0x55 并回读的方式验证通信。
  *
- * @return ESP_OK if SPI comms to CH9434 are working, otherwise error.
+ * @return 与 CH9434 的 SPI 通信正常返回 ESP_OK，否则返回错误。
  */
 esp_err_t ch9434_chip_init(void);
 
 /**
- * Configure a sub-UART (0..3). Wakes the channel if it was in sleep mode.
+ * 配置一个子 UART（0..3）。如果通道处于休眠模式则唤醒。
  */
 esp_err_t ch9434_uart_set_config(uint8_t uart, const ch9434_uart_config_t *cfg);
 
 /**
- * Send bytes through the sub-UART. Splits the payload into chunks that
- * fit the TX FIFO.
+ * 通过子 UART 发送字节。自动将负载分块以适配 TX FIFO
+ * （分块大小可通过 Kconfig 配置）。
  */
 esp_err_t ch9434_uart_write(uint8_t uart, const uint8_t *data, uint16_t len);
 
 /**
- * Read up to `max_len` bytes from the sub-UART RX FIFO. Returns the
- * number of bytes actually read.
+ * 从子 UART RX FIFO 读取最多 `max_len` 字节。
+ * 通过 `out_len` 返回实际读取的字节数。
  */
 esp_err_t ch9434_uart_read(uint8_t uart, uint8_t *data, uint16_t max_len, uint16_t *out_len);
 
 /**
- * Convenience: number of bytes available to read from the RX FIFO.
+ * 便捷函数：RX FIFO 中可读取的字节数。
  */
 esp_err_t ch9434_uart_available(uint8_t uart, uint16_t *count);
 
 /**
- * Print the LSR register (useful for debugging framing errors etc).
+ * 打印 LSR 寄存器（用于调试帧错误等）。
  */
 void ch9434_uart_dump_lsr(uint8_t uart, uint8_t lsr);
 

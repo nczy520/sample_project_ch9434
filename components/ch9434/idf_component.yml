@@ -1,0 +1,42 @@
+## IDF 组件管理器清单文件
+##
+## 允许该组件被 ESP 组件注册表（https://components.espressif.com）发现，
+## 也可以被其他 ESP-IDF 项目直接从 GitHub 仓库拉取。
+##
+## 消费者端 idf_component.yml 示例：
+##
+##   dependencies:
+##     ch9434:
+##       git: https://github.com/nczy520/esp-idf-ch9434.git
+##       path: components/ch9434
+##       version: main
+
+version: "1.0.1"
+
+targets:
+  - esp32
+  - esp32s2
+  - esp32s3
+  - esp32c2
+  - esp32c3
+  - esp32c5
+  - esp32c6
+  - esp32h2
+  - esp32p4
+
+dependencies:
+  idf:
+    version: ">=5.0"
+
+description: "WCH CH9434 SPI 转 4 路 UART 桥接芯片的 ESP-IDF 驱动。基于队列 + 专用 SPI 服务任务实现，支持多 FreeRTOS 任务并发安全访问。"
+
+files:
+  include:
+    - "include/**"
+  exclude:
+    - ".git"
+    - ".github"
+    - "test"
+    - "docs"
+    - "*.md"
+    - "sdkconfig*"

@@ -1,8 +1,8 @@
 /*
- * CH9434 low-level register read/write helpers.
+ * CH9434 底层寄存器读写辅助函数。
  *
- * These wrap the SPI bus primitives with named per-UART register accessors
- * to keep the call sites readable.
+ * 这些函数将 SPI 总线原语封装为命名的按 UART 寄存器访问器，
+ * 以提高调用处的可读性。
  */
 #ifndef CH9434_DRV_H
 #define CH9434_DRV_H
@@ -15,14 +15,14 @@
 extern "C" {
 #endif
 
-/* Single-byte register helpers (full address passed in). */
+/* 单字节寄存器辅助函数（传入完整地址）。 */
 esp_err_t ch9434_write_reg(uint8_t addr, uint8_t val);
 esp_err_t ch9434_read_reg(uint8_t addr, uint8_t *val);
 
-/* Modify a register (read-modify-write) keeping the listed bits intact. */
+/* 修改寄存器（读-改-写），保留指定位不变。 */
 esp_err_t ch9434_modify_reg(uint8_t addr, uint8_t clear_mask, uint8_t set_mask);
 
-/* Per-UART convenience accessors. */
+/* 按 UART 的便捷访问器。 */
 esp_err_t ch9434_uart_write_scr(uint8_t uart, uint8_t val);
 esp_err_t ch9434_uart_read_scr(uint8_t uart, uint8_t *val);
 
@@ -40,16 +40,16 @@ esp_err_t ch9434_uart_write_dlm(uint8_t uart, uint8_t val);
 esp_err_t ch9434_uart_read_dll(uint8_t uart, uint8_t *val);
 esp_err_t ch9434_uart_read_dlm(uint8_t uart, uint8_t *val);
 
-/* FIFO count for the given UART (read-only). The CH9434 splits the count
- * across two consecutive 8-bit registers (low / high). */
+/* 指定 UART 的 FIFO 计数（只读）。CH9434 将计数拆分为
+ * 两个连续的 8 位寄存器（低 / 高）。 */
 esp_err_t ch9434_uart_get_rx_fifo_len(uint8_t uart, uint8_t *len_lo, uint8_t *len_hi);
 esp_err_t ch9434_uart_get_tx_fifo_len(uint8_t uart, uint8_t *len_lo, uint8_t *len_hi);
 
-/* FIFO data IO. */
+/* FIFO 数据输入输出。 */
 esp_err_t ch9434_uart_write_fifo(uint8_t uart, const uint8_t *data, uint16_t len);
 esp_err_t ch9434_uart_read_fifo(uint8_t uart, uint8_t *data, uint16_t len);
 
-/* Global clock control. */
+/* 全局时钟控制。 */
 esp_err_t ch9434_write_clk_ctrl(uint8_t val);
 
 #ifdef __cplusplus

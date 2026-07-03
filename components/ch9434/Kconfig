@@ -1,0 +1,80 @@
+menu "CH9434 配置"
+
+    config CH9434_SPI_HOST
+        int "SPI 主机外设编号"
+        default 2
+        range 0 3
+        help
+            用于与 CH9434 通信的 SPI 外设。
+            ESP32-S3 上可用 SPI2_HOST (2) 和 SPI3_HOST (3)。
+            SPI0/1 预留给 flash/PSRAM，不可使用。
+
+    config CH9434_PIN_MOSI
+        int "MOSI GPIO 引脚"
+        default 11
+        range 0 48
+        help
+            连接到 CH9434 MOSI（主出从入）的 GPIO 引脚。
+
+    config CH9434_PIN_MISO
+        int "MISO GPIO 引脚"
+        default 13
+        range 0 48
+        help
+            连接到 CH9434 MISO（主入从出）的 GPIO 引脚。
+
+    config CH9434_PIN_SCK
+        int "SCK GPIO 引脚"
+        default 12
+        range 0 48
+        help
+            连接到 CH9434 SCK（SPI 时钟）的 GPIO 引脚。
+
+    config CH9434_PIN_CS
+        int "CS GPIO 引脚"
+        default 10
+        range 0 48
+        help
+            连接到 CH9434 CS（片选，低电平有效）的 GPIO 引脚。
+
+    config CH9434_SPI_CLOCK_HZ
+        int "SPI 时钟频率（Hz）"
+        default 200000
+        range 50000 1000000
+        help
+            SPI 时钟频率，单位 Hz。CH9434 数据手册列出 16 MHz 为绝对最大值，
+            但在 ESP32-S3 上 MISO 时序在约 250 kHz 以上就不可靠。
+            200 kHz 是安全默认值。
+
+    config CH9434_SPI_QUEUE_SIZE
+        int "SPI 请求队列深度"
+        default 16
+        range 4 64
+        help
+            服务任务可容纳的待处理 SPI 请求数量。
+            每个请求约 40 字节。如果有大量任务并发进行 UART IO，
+            请增大此值。
+
+    config CH9434_SPI_TASK_STACK
+        int "SPI 服务任务栈大小（字节）"
+        default 3072
+        range 2048 8192
+        help
+            专用 SPI 服务任务的栈大小。
+
+    config CH9434_SPI_TASK_PRIO
+        int "SPI 服务任务优先级"
+        default 10
+        range 1 24
+        help
+            SPI 服务任务的优先级。应高于任何调用 CH9434 API 的任务，
+            以最小化 SPI 延迟。
+
+    config CH9434_TX_CHUNK_SIZE
+        int "UART TX 分块大小"
+        default 128
+        range 16 256
+        help
+            每次 TX FIFO 写入的字节数。CH9434A 的 TX FIFO 为 1536 字节；
+            分块可以保持单次 SPI 事务简短，让 FIFO 在两次写入之间排空。
+endmenu

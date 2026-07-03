@@ -1,5 +1,5 @@
 /*
- * CH9434 low-level register helpers - implementation.
+ * CH9434 底层寄存器辅助函数 - 实现。
  */
 #include <string.h>
 #include "esp_log.h"
@@ -95,7 +95,7 @@ esp_err_t ch9434_uart_read_dlm(uint8_t uart, uint8_t *val)
 esp_err_t ch9434_uart_get_rx_fifo_len(uint8_t uart, uint8_t *len_lo, uint8_t *len_hi)
 {
     esp_err_t ret;
-    /* Select which UART the FIFO count applies to. */
+    /* 选择 FIFO 计数对应的 UART。 */
     ret = ch9434_write_reg(CH9434_FIFO_CTRL, (uint8_t)(uart & CH9434_FIFO_CTRL_UART_MASK));
     if (ret != ESP_OK) {
         return ret;
