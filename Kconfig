@@ -39,12 +39,12 @@ menu "CH9434 配置"
 
     config CH9434_SPI_CLOCK_HZ
         int "SPI 时钟频率（Hz）"
-        default 200000
-        range 50000 1000000
+        default 10000000
+        range 50000 80000000
         help
             SPI 时钟频率，单位 Hz。CH9434 数据手册列出 16 MHz 为绝对最大值，
-            但在 ESP32-S3 上 MISO 时序在约 250 kHz 以上就不可靠。
-            200 kHz 是安全默认值。
+            实际可支持更高频率，需根据硬件布线和电源稳定性调整。
+            默认 10 MHz，平衡性能与稳定性。
 
     config CH9434_SPI_QUEUE_SIZE
         int "SPI 请求队列深度"

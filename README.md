@@ -11,7 +11,7 @@ FreeRTOS 任务可并发调用 API 而不会争用 SPI 外设。
 - 支持芯片：**CH9434A** / **CH9434M** / **CH9434D**（协议层功能一致）
 - 支持目标：ESP32 / ESP32-S2 / ESP32-S3 / ESP32-C2 / C3 / C5 / C6 / ESP32-H2 / ESP32-P4
 - 主测平台：**ESP32-S3**（使用 SPI2 或 SPI3 主机）
-- SPI 时钟：最高 1 MHz（默认 200 kHz，保证 MISO 时序安全）
+- SPI 时钟：最高 80 MHz（默认 10 MHz）
 - UART 波特率：1200 - 921600 bps
 - 每路 UART FIFO：RX 256 字节 / TX 1536 字节（CH9434A）
 - 并发模型：队列 + 服务任务（无互斥锁，无锁竞争）
@@ -140,7 +140,7 @@ dependencies:
 | `CONFIG_CH9434_PIN_MISO`       | 13     | MISO GPIO                           |
 | `CONFIG_CH9434_PIN_SCK`        | 12     | SCK GPIO                            |
 | `CONFIG_CH9434_PIN_CS`         | 10     | CS GPIO                             |
-| `CONFIG_CH9434_SPI_CLOCK_HZ`   | 200000 | SPI 时钟（Hz，50k-1M）              |
+| `CONFIG_CH9434_SPI_CLOCK_HZ`   | 10000000 | SPI 时钟（Hz，50k-80M）              |
 | `CONFIG_CH9434_SPI_QUEUE_SIZE` | 16     | SPI 请求队列深度                    |
 | `CONFIG_CH9434_SPI_TASK_STACK` | 3072   | SPI 服务任务栈大小（字节）          |
 | `CONFIG_CH9434_SPI_TASK_PRIO`  | 10     | SPI 服务任务优先级（1-24）          |
@@ -335,7 +335,7 @@ typedef struct {
 | TX FIFO 深度 | 1536 字节 / 通道（CH9434A） |
 | FIFO 触发电平 | 1 / 4 / 8 / 14 字节（默认 8） |
 | SPI 模式 | 模式 0（CPOL=0, CPHA=0） |
-| SPI 时钟范围 | 50 kHz ~ 1 MHz（默认 200 kHz） |
+| SPI 时钟范围 | 50 kHz ~ 80 MHz（默认 10 MHz） |
 | 硬件流控 | 支持（自动 RTS/CTS） |
 | 支持数据位 | 5 / 6 / 7 / 8 |
 | 支持停止位 | 1 / 2 |
