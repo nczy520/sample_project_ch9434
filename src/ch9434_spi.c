@@ -318,9 +318,16 @@ static void spi_service_task(void *arg)
                                           CH9434A_DELAY_READ_DONE_US);
             if (req.result == ESP_OK && req.fifo_len) {
                 *req.fifo_len = (uint16_t)((hi << 8) | lo);
-                ESP_LOGD(TAG, "GET_FIFO_LEN uart=%u %s lo=0x%02X hi=0x%02X -> %u",
-                         (unsigned)req.uart, req.is_tx ? "TX" : "RX",
-                         lo, hi, (unsigned)*req.fifo_len);
+                /* TX 方向诊断：限制前 5 次日志，避免重试时刷屏。
+                 * 用于排查 TX FIFO 长度查询返回异常值的问题。 */
+                if (req.is_tx) {
+                    static int s_tx_diag_count = 0;
+                    if (s_tx_diag_count < 5) {
+                        s_tx_diag_count++;
+                        ESP_LOGW(TAG, "TX FIFO uart=%u lo=0x%02X hi=0x%02X -> used=%u",
+                                 (unsigned)req.uart, lo, hi, (unsigned)*req.fifo_len);
+                    }
+                }
             }
             break;
         }
