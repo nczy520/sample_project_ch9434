@@ -39,12 +39,12 @@ menu "CH9434 配置"
 
     config CH9434_SPI_CLOCK_HZ
         int "SPI 时钟频率（Hz）"
-        default 10000000
-        range 50000 80000000
+        default 2000000
+        range 50000 16000000
         help
-            SPI 时钟频率，单位 Hz。CH9434 数据手册列出 16 MHz 为绝对最大值，
-            实际可支持更高频率，需根据硬件布线和电源稳定性调整。
-            默认 10 MHz，平衡性能与稳定性。
+            SPI 时钟频率，单位 Hz。CH9434 数据手册标称最大支持 16 MHz。
+            为保证通信稳定性，默认采用 2 MHz。
+            实际可用最高频率受硬件布线、电源稳定性及 MCU SPI 外设限制。
 
     config CH9434_SPI_QUEUE_SIZE
         int "SPI 请求队列深度"

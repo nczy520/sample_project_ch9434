@@ -11,7 +11,7 @@
  *   MISO = GPIO 13
  *   SCK  = GPIO 12
  *   CS   = GPIO 10
- *   CLK  = 10 MHz
+ *   CLK  = 2 MHz
  */
 #ifndef CH9434_SPI_H
 #define CH9434_SPI_H
@@ -24,8 +24,8 @@
 extern "C" {
 #endif
 
-/* CH9434 的默认 SPI 时钟（10 MHz - 平衡性能与稳定性的安全值；
- * 芯片数据手册列出 16 MHz 最大值，实际可支持更高频率）。
+/* CH9434 的默认 SPI 时钟（2 MHz - 为保证通信稳定性采用的频率；
+ * CH9434 数据手册标称最大支持 16 MHz）。
  *
  * 运行时实际使用的值来自 CONFIG_CH9434_SPI_CLOCK_HZ（Kconfig）。
  * 保留此宏是为了向后兼容编译时读取它的代码。 */
@@ -33,7 +33,7 @@ extern "C" {
 #ifdef CONFIG_CH9434_SPI_CLOCK_HZ
 #define CH9434_SPI_CLOCK_HZ CONFIG_CH9434_SPI_CLOCK_HZ
 #else
-#define CH9434_SPI_CLOCK_HZ (10 * 1000 * 1000)
+#define CH9434_SPI_CLOCK_HZ (2 * 1000 * 1000)
 #endif
 #endif
 
