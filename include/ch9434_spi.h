@@ -92,6 +92,33 @@ esp_err_t ch9434_spi_write_bytes(uint8_t reg, const uint8_t *data, uint16_t len)
  */
 esp_err_t ch9434_spi_read_bytes(uint8_t reg, uint8_t *data, uint16_t len);
 
+/**
+ * 合并请求：获取指定 UART 的 RX/TX FIFO 数据长度。
+ *
+ * 在一次队列请求内完成：写 FIFO_CTRL + 读 FIFO_CTRL_L + 读 FIFO_CTRL_H，
+ * 比三次独立调用减少 2 次队列切换开销。
+ *
+ * @param uart      UART 编号（0..3）。
+ * @param is_tx     true=查询 TX FIFO, false=查询 RX FIFO。
+ * @param fifo_len  输出 FIFO 中当前数据字节数。
+ * @return 成功返回 ESP_OK，否则返回 esp_err_t 错误码。
+ */
+esp_err_t ch9434_spi_get_fifo_len(uint8_t uart, bool is_tx, uint16_t *fifo_len);
+
+/**
+ * 合并请求：获取 RX FIFO 长度并读取数据，单次队列切换完成。
+ *
+ * 在一次队列请求内完成：写 FIFO_CTRL 选 UART + 读 FIFO 长度 + 读 FIFO 数据，
+ * 比先查长度再读数据减少 1 次队列切换开销。
+ *
+ * @param uart      UART 编号（0..3）。
+ * @param data      输出缓冲区。
+ * @param max_len   最大读取字节数（缓冲区大小）。
+ * @param out_len   实际读取的字节数输出。
+ * @return 成功返回 ESP_OK，否则返回 esp_err_t 错误码。
+ */
+esp_err_t ch9434_spi_read_fifo(uint8_t uart, uint8_t *data, uint16_t max_len, uint16_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

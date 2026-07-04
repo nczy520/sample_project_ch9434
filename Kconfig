@@ -77,4 +77,21 @@ menu "CH9434 配置"
         help
             每次 TX FIFO 写入的字节数。CH9434A 的 TX FIFO 为 1536 字节；
             分块可以保持单次 SPI 事务简短，让 FIFO 在两次写入之间排空。
+
+    config CH9434_TX_WAIT_MS
+        int "TX FIFO 满时等待时间（毫秒）"
+        default 5
+        range 1 100
+        help
+            当 TX FIFO 空间不足时，每次重试前等待的毫秒数。
+            值越小延迟越低，但 CPU 占用越高。
+
+    config CH9434_TX_MAX_RETRIES
+        int "TX 写入最大重试次数"
+        default 200
+        range 10 10000
+        help
+            TX FIFO 满时的最大重试次数。超过则返回 ESP_ERR_TIMEOUT。
+            默认 200 次 * 5ms = 1 秒超时。
+            设置较大值可适配极低波特率下的大数据量传输。
 endmenu

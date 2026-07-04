@@ -1,8 +1,6 @@
 /*
  * CH9434 底层寄存器辅助函数 - 实现。
  */
-#include <string.h>
-#include "esp_log.h"
 #include "ch9434_drv.h"
 #include "ch9434_spi.h"
 
@@ -94,32 +92,34 @@ esp_err_t ch9434_uart_read_dlm(uint8_t uart, uint8_t *val)
 
 esp_err_t ch9434_uart_get_rx_fifo_len(uint8_t uart, uint8_t *len_lo, uint8_t *len_hi)
 {
-    esp_err_t ret;
-    /* 选择 FIFO 计数对应的 UART。 */
-    ret = ch9434_write_reg(CH9434_FIFO_CTRL, (uint8_t)(uart & CH9434_FIFO_CTRL_UART_MASK));
+    uint16_t fifo_len = 0;
+    esp_err_t ret = ch9434_spi_get_fifo_len(uart, false, &fifo_len);
     if (ret != ESP_OK) {
         return ret;
     }
-    ret = ch9434_read_reg(CH9434_FIFO_CTRL_L, len_lo);
-    if (ret != ESP_OK) {
-        return ret;
+    if (len_lo) {
+        *len_lo = (uint8_t)(fifo_len & 0xFF);
     }
-    return ch9434_read_reg(CH9434_FIFO_CTRL_H, len_hi);
+    if (len_hi) {
+        *len_hi = (uint8_t)((fifo_len >> 8) & 0xFF);
+    }
+    return ESP_OK;
 }
 
 esp_err_t ch9434_uart_get_tx_fifo_len(uint8_t uart, uint8_t *len_lo, uint8_t *len_hi)
 {
-    esp_err_t ret;
-    ret = ch9434_write_reg(CH9434_FIFO_CTRL,
-                           (uint8_t)(CH9434_FIFO_CTRL_TR | (uart & CH9434_FIFO_CTRL_UART_MASK)));
+    uint16_t fifo_len = 0;
+    esp_err_t ret = ch9434_spi_get_fifo_len(uart, true, &fifo_len);
     if (ret != ESP_OK) {
         return ret;
     }
-    ret = ch9434_read_reg(CH9434_FIFO_CTRL_L, len_lo);
-    if (ret != ESP_OK) {
-        return ret;
+    if (len_lo) {
+        *len_lo = (uint8_t)(fifo_len & 0xFF);
     }
-    return ch9434_read_reg(CH9434_FIFO_CTRL_H, len_hi);
+    if (len_hi) {
+        *len_hi = (uint8_t)((fifo_len >> 8) & 0xFF);
+    }
+    return ESP_OK;
 }
 
 esp_err_t ch9434_uart_write_fifo(uint8_t uart, const uint8_t *data, uint16_t len)

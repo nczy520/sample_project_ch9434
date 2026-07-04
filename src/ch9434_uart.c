@@ -23,6 +23,26 @@
 #define CH9434_TX_CHUNK_SIZE CONFIG_CH9434_TX_CHUNK_SIZE
 #endif
 
+/* TX FIFO 容量（CH9434A 为 1536 字节）。 */
+#define CH9434_TX_FIFO_SIZE       1536U
+/* RX FIFO 容量（CH9434A 为 256 字节）。 */
+#define CH9434_RX_FIFO_SIZE       256U
+
+/* TX 流控等待的最小间隔（毫秒）。当 TX FIFO 空间不足时，
+ * 每次重试前等待的时间。 */
+#ifndef CONFIG_CH9434_TX_WAIT_MS
+#define CH9434_TX_WAIT_MS         5
+#else
+#define CH9434_TX_WAIT_MS         CONFIG_CH9434_TX_WAIT_MS
+#endif
+
+/* TX 写入最大重试次数。超过则返回失败，避免死等。 */
+#ifndef CONFIG_CH9434_TX_MAX_RETRIES
+#define CH9434_TX_MAX_RETRIES     200
+#else
+#define CH9434_TX_MAX_RETRIES     CONFIG_CH9434_TX_MAX_RETRIES
+#endif
+
 /* -------------------------------------------------------------------------- */
 /*                          芯片启动初始化                                     */
 /* -------------------------------------------------------------------------- */
@@ -208,16 +228,45 @@ esp_err_t ch9434_uart_write(uint8_t uart, const uint8_t *data, uint16_t len)
         return ESP_OK;
     }
 
-    /* 批量写入 THR；CH9434 芯片每次写入最多可接受其 TX FIFO
-     * （CH9434A 为 1536 字节）。我们分块发送以保持 SPI 事务简短，
-     * 并让 FIFO 有时间排空。 */
     uint16_t offset = 0;
+    uint32_t retries = 0;
+
     while (offset < len) {
-        uint16_t chunk = len - offset;
+        uint16_t remaining = len - offset;
+
+        /* 查询 TX FIFO 剩余空间。 */
+        uint16_t tx_used = 0;
+        esp_err_t ret = ch9434_spi_get_fifo_len(uart, true, &tx_used);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        uint16_t tx_free = (tx_used < CH9434_TX_FIFO_SIZE)
+                           ? (CH9434_TX_FIFO_SIZE - tx_used) : 0;
+
+        if (tx_free == 0) {
+            /* TX FIFO 满，等待并重试。 */
+            if (retries >= CH9434_TX_MAX_RETRIES) {
+                ESP_LOGW(TAG, "UART%u TX FIFO 超时，已写入 %u/%u 字节",
+                         uart, (unsigned)offset, (unsigned)len);
+                return ESP_ERR_TIMEOUT;
+            }
+            retries++;
+            vTaskDelay(pdMS_TO_TICKS(CH9434_TX_WAIT_MS));
+            continue;
+        }
+        retries = 0;
+
+        /* 计算本次写入的字节数，不超过分块大小和 FIFO 剩余空间。 */
+        uint16_t chunk = remaining;
+        if (chunk > tx_free) {
+            chunk = tx_free;
+        }
         if (chunk > CH9434_TX_CHUNK_SIZE) {
             chunk = CH9434_TX_CHUNK_SIZE;
         }
-        esp_err_t ret = ch9434_uart_write_fifo(uart, &data[offset], chunk);
+
+        ret = ch9434_uart_write_fifo(uart, &data[offset], chunk);
         if (ret != ESP_OK) {
             return ret;
         }
@@ -237,26 +286,7 @@ esp_err_t ch9434_uart_read(uint8_t uart, uint8_t *data, uint16_t max_len, uint16
         return ESP_OK;
     }
 
-    /* 检查有多少字节在等待。 */
-    uint8_t lo = 0, hi = 0;
-    esp_err_t ret = ch9434_uart_get_rx_fifo_len(uart, &lo, &hi);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    uint16_t available = (uint16_t)((hi << 8) | lo);
-    if (available == 0) {
-        return ESP_OK;
-    }
-    if (available > max_len) {
-        available = max_len;
-    }
-
-    ret = ch9434_uart_read_fifo(uart, data, available);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    *out_len = available;
-    return ESP_OK;
+    return ch9434_spi_read_fifo(uart, data, max_len, out_len);
 }
 
 esp_err_t ch9434_uart_available(uint8_t uart, uint16_t *count)
@@ -264,12 +294,21 @@ esp_err_t ch9434_uart_available(uint8_t uart, uint16_t *count)
     if (uart >= CH9434_UART_COUNT || count == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    uint8_t lo = 0, hi = 0;
-    esp_err_t ret = ch9434_uart_get_rx_fifo_len(uart, &lo, &hi);
+    return ch9434_spi_get_fifo_len(uart, false, count);
+}
+
+esp_err_t ch9434_uart_tx_free(uint8_t uart, uint16_t *count)
+{
+    if (uart >= CH9434_UART_COUNT || count == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint16_t tx_used = 0;
+    esp_err_t ret = ch9434_spi_get_fifo_len(uart, true, &tx_used);
     if (ret != ESP_OK) {
         return ret;
     }
-    *count = (uint16_t)((hi << 8) | lo);
+    *count = (tx_used < CH9434_TX_FIFO_SIZE)
+             ? (CH9434_TX_FIFO_SIZE - tx_used) : 0;
     return ESP_OK;
 }
 

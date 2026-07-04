@@ -1,6 +1,6 @@
 # ch9434 - WCH CH9434 SPI 转 4 路 UART 桥接芯片 ESP-IDF 驱动
 
-[![Component](https://img.shields.io/badge/ESP--IDF-5.0%2B-blue)](https://docs.espressif.com/projects/esp-idf/)
+[![Component](https://img.shields.io/badge/ESP--IDF-6.0%2B-blue)](https://docs.espressif.com/projects/esp-idf/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Target](https://img.shields.io/badge/target-ESP32--S3-orange)](https://www.espressif.com/en/products/socs/esp32-s3)
 
@@ -217,9 +217,10 @@ idf.py flash monitor
 |------|------|
 | `ch9434_chip_init()` | 初始化 SPI 总线 + 通过 SCR 回环测试校验芯片通信 |
 | `ch9434_uart_set_config(uart, cfg)` | 配置波特率/数据位/停止位/校验/FIFO/流控 |
-| `ch9434_uart_write(uart, data, len)` | 发送字节（自动分块适配 FIFO 大小） |
-| `ch9434_uart_read(uart, data, max, out)` | 从 RX FIFO 读取最多 `max` 字节 |
+| `ch9434_uart_write(uart, data, len)` | 发送字节（带 TX FIFO 流控 + 自动分块 + 超时重试） |
+| `ch9434_uart_read(uart, data, max, out)` | 从 RX FIFO 读取最多 `max` 字节（单次队列切换优化） |
 | `ch9434_uart_available(uart, count)` | 查询 RX FIFO 中等待读取的字节数 |
+| `ch9434_uart_tx_free(uart, count)` | 查询 TX FIFO 剩余空闲字节数 |
 | `ch9434_uart_dump_lsr(uart, lsr)` | 人可读的 LSR 寄存器转储（调试用） |
 
 **配置结构：**
@@ -296,7 +297,31 @@ typedef struct {
 即不可能发生。批量 FIFO 传输作为单个队列条目提交，因此执行过程不会与
 其他 UART 的数据流交错。
 
-请求队列支持 4 种类型：`WRITE_REG`、`READ_REG`、`WRITE_BYTES`、`READ_BYTES`。
+### 请求类型
+
+队列支持 6 种请求类型：
+
+| 类型 | 说明 | 队列切换次数 | SPI 传输次数 |
+|------|------|:------------:|:------------:|
+| `WRITE_REG` | 写入单个寄存器 | 1 | 1 |
+| `READ_REG` | 读取单个寄存器 | 1 | 1 |
+| `WRITE_BYTES` | FIFO 批量写入（多字节） | 1 | N（每字节 1 次） |
+| `READ_BYTES` | FIFO 批量读取（指定长度） | 1 | N（每字节 1 次） |
+| `GET_FIFO_LEN` | 查询 RX/TX FIFO 长度（合并 3 步） | 1 | 3 |
+| `READ_FIFO` | 查长度 + 读数据（合并 4 步） | 1 | 3 + N |
+
+**优化亮点**：`GET_FIFO_LEN` 和 `READ_FIFO` 是合并请求，将原本需要多次队列切换
+的操作压缩为单次，在多任务大数据量场景下显著减少上下文切换开销。
+对比优化前：
+- `uget_rx_fifo_len`：3 次队列切换 → **1 次**（减少 67%）
+- `uart_read`：4 次队列切换 → **1 次**（减少 75%）
+
+### TX 流控
+
+`ch9434_uart_write()` 内置 TX FIFO 流控：
+- 每次写入前查询 TX FIFO 剩余空间
+- FIFO 满时自动等待并重试（可配置等待间隔和最大重试次数）
+- 超时返回 `ESP_ERR_TIMEOUT`，避免数据丢失或死等
 
 ## 技术参数
 

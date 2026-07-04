@@ -61,6 +61,8 @@ typedef enum {
     SPI_REQ_READ_REG,
     SPI_REQ_WRITE_BYTES,
     SPI_REQ_READ_BYTES,
+    SPI_REQ_GET_FIFO_LEN,
+    SPI_REQ_READ_FIFO,
 } spi_req_type_t;
 
 typedef struct {
@@ -69,8 +71,12 @@ typedef struct {
     uint8_t         value;          /* WRITE_REG: 待写入字节          */
     uint8_t        *out_value;      /* READ_REG:  输出指针            */
     const uint8_t  *wdata;          /* WRITE_BYTES: 源数据缓冲区      */
-    uint8_t        *rdata;          /* READ_BYTES: 目的数据缓冲区     */
-    uint16_t        len;            /* BYTES: 字节数量                */
+    uint8_t        *rdata;          /* READ_BYTES / READ_FIFO: 目的缓冲区 */
+    uint16_t        len;            /* BYTES: 字节数量 / READ_FIFO: max_len */
+    uint16_t       *out_len;        /* READ_FIFO: 实际读取字节数      */
+    uint16_t       *fifo_len;       /* GET_FIFO_LEN: FIFO 长度输出    */
+    uint8_t         uart;           /* GET_FIFO_LEN / READ_FIFO: UART 编号 */
+    bool            is_tx;          /* GET_FIFO_LEN: true=TX, false=RX */
     esp_err_t       result;         /* 由服务任务填充                 */
     TaskHandle_t    caller;         /* 完成后通知的任务               */
 } spi_req_t;
@@ -110,7 +116,7 @@ esp_err_t ch9434_spi_bus_init(void)
         .sclk_io_num     = PIN_NUM_SCK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = 16,
+        .max_transfer_sz = 64,
     };
 
     spi_device_interface_config_t dev_cfg = {
@@ -279,6 +285,81 @@ static void spi_service_task(void *arg)
                 }
             }
             break;
+
+        case SPI_REQ_GET_FIFO_LEN: {
+            uint8_t fifo_ctrl = (uint8_t)(req.uart & CH9434_FIFO_CTRL_UART_MASK);
+            if (req.is_tx) {
+                fifo_ctrl |= CH9434_FIFO_CTRL_TR;
+            }
+            req.result = ch9434_spi_xfer2(CH9434_REG_OP_WRITE, CH9434_FIFO_CTRL,
+                                          fifo_ctrl, NULL,
+                                          CH9434A_DELAY_DATA_TO_CS_US);
+            if (req.result != ESP_OK) {
+                break;
+            }
+            uint8_t lo = 0, hi = 0;
+            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_L,
+                                          0xFF, &lo,
+                                          CH9434A_DELAY_READ_DONE_US);
+            if (req.result != ESP_OK) {
+                break;
+            }
+            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_H,
+                                          0xFF, &hi,
+                                          CH9434A_DELAY_READ_DONE_US);
+            if (req.result == ESP_OK && req.fifo_len) {
+                *req.fifo_len = (uint16_t)((hi << 8) | lo);
+            }
+            break;
+        }
+
+        case SPI_REQ_READ_FIFO: {
+            uint8_t fifo_ctrl = (uint8_t)(req.uart & CH9434_FIFO_CTRL_UART_MASK);
+            req.result = ch9434_spi_xfer2(CH9434_REG_OP_WRITE, CH9434_FIFO_CTRL,
+                                          fifo_ctrl, NULL,
+                                          CH9434A_DELAY_DATA_TO_CS_US);
+            if (req.result != ESP_OK) {
+                break;
+            }
+            uint8_t lo = 0, hi = 0;
+            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_L,
+                                          0xFF, &lo,
+                                          CH9434A_DELAY_READ_DONE_US);
+            if (req.result != ESP_OK) {
+                break;
+            }
+            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_H,
+                                          0xFF, &hi,
+                                          CH9434A_DELAY_READ_DONE_US);
+            if (req.result != ESP_OK) {
+                break;
+            }
+            uint16_t available = (uint16_t)((hi << 8) | lo);
+            if (available > req.len) {
+                available = req.len;
+            }
+            if (req.out_len) {
+                *req.out_len = available;
+            }
+            if (available == 0) {
+                req.result = ESP_OK;
+                break;
+            }
+            uint8_t rbr_addr = CH9434_ADDR_RBR(req.uart);
+            req.result = ESP_OK;
+            for (uint16_t i = 0; i < available; i++) {
+                req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, rbr_addr,
+                                              0xFF, &req.rdata[i],
+                                              CH9434A_DELAY_READ_DONE_US);
+                if (req.result != ESP_OK) {
+                    if (req.out_len) {
+                        *req.out_len = i;
+                    }
+                    break;
+                }
+            }
+            break;
+        }
         }
 
         /* 通知调用者事务已完成。
@@ -376,6 +457,45 @@ esp_err_t ch9434_spi_read_bytes(uint8_t reg, uint8_t *data, uint16_t len)
         .reg   = reg,
         .rdata = data,
         .len   = len,
+    };
+    return spi_submit(&req);
+}
+
+esp_err_t ch9434_spi_get_fifo_len(uint8_t uart, bool is_tx, uint16_t *fifo_len)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (uart >= CH9434_UART_COUNT || fifo_len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    spi_req_t req = {
+        .type     = SPI_REQ_GET_FIFO_LEN,
+        .uart     = uart,
+        .is_tx    = is_tx,
+        .fifo_len = fifo_len,
+    };
+    return spi_submit(&req);
+}
+
+esp_err_t ch9434_spi_read_fifo(uint8_t uart, uint8_t *data, uint16_t max_len, uint16_t *out_len)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (uart >= CH9434_UART_COUNT || data == NULL || out_len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_len = 0;
+    if (max_len == 0) {
+        return ESP_OK;
+    }
+    spi_req_t req = {
+        .type    = SPI_REQ_READ_FIFO,
+        .uart    = uart,
+        .rdata   = data,
+        .len     = max_len,
+        .out_len = out_len,
     };
     return spi_submit(&req);
 }

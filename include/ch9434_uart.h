@@ -99,6 +99,11 @@ esp_err_t ch9434_uart_read(uint8_t uart, uint8_t *data, uint16_t max_len, uint16
 esp_err_t ch9434_uart_available(uint8_t uart, uint16_t *count);
 
 /**
+ * 查询 TX FIFO 中剩余的空闲空间（可写入的字节数）。
+ */
+esp_err_t ch9434_uart_tx_free(uint8_t uart, uint16_t *count);
+
+/**
  * 打印 LSR 寄存器（用于调试帧错误等）。
  */
 void ch9434_uart_dump_lsr(uint8_t uart, uint8_t lsr);
