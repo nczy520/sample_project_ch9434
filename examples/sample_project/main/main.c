@@ -2,6 +2,7 @@
  * Application entry point: bring up the CH9434 over SPI, configure all four
  * sub-UARTs and run a continuous loopback / cross-link self test.
  */
+#include <stdlib.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

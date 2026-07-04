@@ -9,6 +9,8 @@
 #include <string.h>
 #include "esp_log.h"
 #include "rom/ets_sys.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 #include "ch9434_uart.h"
 #include "ch9434_drv.h"
