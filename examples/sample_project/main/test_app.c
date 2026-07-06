@@ -17,7 +17,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #include "ch9434_uart.h"
-#include "ch9434_drv.h"
+#include "ch9434_hw.h"
 #include "ch9434_regs.h"
 #include "test_app.h"
 
@@ -102,7 +102,7 @@ static bool test_loopback_random(uint8_t uart, uint16_t len, uint32_t group)
         ESP_LOG_BUFFER_HEX(TAG, tx_buf, len > 16 ? 16 : len);
         ESP_LOG_BUFFER_HEX(TAG, rx_buf, len > 16 ? 16 : len);
         uint8_t lsr = 0;
-        ch9434_uart_read_lsr(uart, &lsr);
+        ch9434_hw_read_reg(CH9434_ADDR_LSR(uart), &lsr);
         ch9434_uart_dump_lsr(uart, lsr);
         return false;
     }
@@ -155,7 +155,7 @@ static bool test_cross_random(uint8_t tx_uart, uint8_t rx_uart, uint16_t len, ui
         ESP_LOG_BUFFER_HEX(TAG, tx_buf, len > 16 ? 16 : len);
         ESP_LOG_BUFFER_HEX(TAG, rx_buf, len > 16 ? 16 : len);
         uint8_t lsr = 0;
-        ch9434_uart_read_lsr(rx_uart, &lsr);
+        ch9434_hw_read_reg(CH9434_ADDR_LSR(rx_uart), &lsr);
         ch9434_uart_dump_lsr(rx_uart, lsr);
         return false;
     }

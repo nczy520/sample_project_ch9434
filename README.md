@@ -1,13 +1,11 @@
-# ch9434 - WCH CH9434 SPI 转 4 路 UART 桥接芯片 ESP-IDF 驱动
+# esp_ch9434 - WCH CH9434 SPI 转 4 路 UART 桥接芯片 ESP-IDF 驱动
 
 [![Component](https://img.shields.io/badge/ESP--IDF-6.0%2B-blue)](https://docs.espressif.com/projects/esp-idf/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Target](https://img.shields.io/badge/target-ESP32--S3-orange)](https://www.espressif.com/en/products/socs/esp32-s3)
-[![Version](https://img.shields.io/badge/version-1.0.4-blueviolet)](idf_component.yml)
+[![Version](https://img.shields.io/badge/version-1.1.0-blueviolet)](esp_ch9434/idf_component.yml)
 
-WCH（沁恒微电子）**CH9434** 芯片的 ESP-IDF 生产级驱动。该芯片通过一路 SPI 总线扩展出
-**4 路独立 UART 通道**。驱动完全线程安全：由专用的 SPI 服务任务消费请求队列，任意数量的
-FreeRTOS 任务可并发调用 API 而不会争用 SPI 外设。
+WCH（沁恒微电子）**CH9434** 芯片的 ESP-IDF 生产级驱动。该芯片通过一路 SPI 总线扩展出 **4 路独立 UART 通道**。驱动完全线程安全：由专用的 SPI 服务任务消费请求队列，任意数量的 FreeRTOS 任务可并发调用 API 而不会争用 SPI 外设。
 
 - 支持芯片：**CH9434A** / **CH9434M** / **CH9434D**（协议层功能一致）
 - 支持目标：ESP32 / ESP32-S2 / ESP32-S3 / ESP32-C2 / C3 / C5 / C6 / ESP32-H2 / ESP32-P4
@@ -31,8 +29,7 @@ FreeRTOS 任务可并发调用 API 而不会争用 SPI 外设。
 - [示例项目](#示例项目)
 - [API 参考](#api-参考)
   - [高层 UART API（ch9434_uart.h）](#高层-uart-apich9434_uarth)
-  - [SPI 层（ch9434_spi.h）](#spi-层ch9434_spih)
-  - [寄存器层（ch9434_drv.h）](#寄存器层ch9434_drvh)
+  - [硬件层（ch9434_hw.h）](#硬件层ch9434_hwh)
   - [寄存器定义（ch9434_regs.h）](#寄存器定义ch9434_regsh)
 - [并发模型](#并发模型)
 - [技术参数](#技术参数)
@@ -45,13 +42,11 @@ esp-idf-ch9434/                   ← 仓库根目录
 ├── esp_ch9434/                    ← esp_ch9434 组件目录
 │   ├── include/                   ← 头文件（对外 API）
 │   │   ├── ch9434_uart.h          ← UART 高层 API
-│   │   ├── ch9434_spi.h           ← SPI 总线抽象层
-│   │   ├── ch9434_drv.h           ← 寄存器访问层
+│   │   ├── ch9434_hw.h            ← SPI 硬件抽象层（寄存器读写 + 队列服务任务）
 │   │   └── ch9434_regs.h          ← 寄存器映射定义
 │   ├── src/                       ← 实现源码
-│   │   ├── ch9434_uart.c          ← UART 配置与收发
-│   │   ├── ch9434_spi.c           ← SPI 时序与串行化
-│   │   └── ch9434_drv.c           ← 寄存器辅助函数
+│   │   ├── ch9434_hw.c            ← SPI 时序与队列串行化实现
+│   │   └── ch9434_uart.c          ← UART 配置与收发实现
 │   ├── CMakeLists.txt             ← 组件级 CMake（idf_component_register）
 │   ├── idf_component.yml          ← 组件管理器清单
 │   ├── Kconfig                    ← 配置菜单
@@ -105,16 +100,14 @@ dependencies:
   esp_ch9434:
     git: https://github.com/nczy520/esp-idf-ch9434.git
     path: esp_ch9434   # 组件在仓库内的子目录路径
-    version: main       # 也可指定 tag，如 v1.0.4
+    version: main       # 也可指定 tag，如 v1.1.0
 ```
 
-执行 `idf.py reconfigure`，组件管理器会自动将仓库克隆到
-`managed_components/esp_ch9434/` 目录并定位到 `esp_ch9434/` 子目录中的组件。
+执行 `idf.py reconfigure`，组件管理器会自动将仓库克隆到 `managed_components/esp_ch9434/` 目录并定位到 `esp_ch9434/` 子目录中的组件。
 
 ### 方式 C：手动拷贝
 
-将本仓库的 `esp_ch9434/` 目录拷贝到 `<你的项目>/components/esp_ch9434/`，并在你的组件的
-`REQUIRES` 列表中添加 `esp_ch9434`。
+将本仓库的 `esp_ch9434/` 目录拷贝到 `<你的项目>/components/esp_ch9434/`，并在你的组件的 `REQUIRES` 列表中添加 `esp_ch9434`。
 
 ## 硬件连接
 
@@ -201,8 +194,7 @@ void app_main(void)
 
 ## 示例项目
 
-完整的端到端测试程序位于 [examples/sample_project/](examples/sample_project/) 目录，
-演示了在多 FreeRTOS 任务中同时使用 4 路 UART 的场景，包括：
+完整的端到端测试程序位于 [examples/sample_project/](examples/sample_project/) 目录，演示了在多 FreeRTOS 任务中同时使用 4 路 UART 的场景，包括：
 
 - **UART0 回环测试**：随机长度（1-255 字节）随机数据回环验证
 - **UART1 ↔ UART2 交叉测试**：双向交叉链路数据收发验证
@@ -251,42 +243,21 @@ typedef struct {
 
 **波特率枚举：** `CH9434_BAUD_1200` / `2400` / `4800` / `9600` / `19200` / `38400` / `57600` / `115200` / `230400` / `460800` / `921600`
 
-### SPI 层（ch9434_spi.h）
+### 硬件层（ch9434_hw.h）
 
-底层 SPI 原语。公共 API 已线程安全（内部队列串行化）。
-
-| 函数 | 说明 |
-|------|------|
-| `ch9434_spi_bus_init()` | 初始化 SPI 总线（`ch9434_chip_init` 会自动调用） |
-| `ch9434_spi_bus_deinit()` | 释放 SPI 总线 |
-| `ch9434_spi_write_reg(reg, val)` | 写入单个寄存器字节 |
-| `ch9434_spi_read_reg(reg, val)` | 读取单个寄存器字节 |
-| `ch9434_spi_write_bytes(reg, data, len)` | 批量 FIFO 写入 |
-| `ch9434_spi_read_bytes(reg, data, len)` | 批量 FIFO 读取 |
-| `ch9434_spi_get_fifo_len(uart, is_tx, len)` | 合并请求查询 FIFO 长度（RX=已用, TX=空闲） |
-| `ch9434_spi_read_fifo(uart, data, max, out)` | 合并请求查长度 + 读数据（仅 RX） |
-
-### 寄存器层（ch9434_drv.h）
-
-按 UART 命名的寄存器访问辅助函数，基于 SPI 原语构建。
-当高层 UART API 没有暴露你需要的功能时，可使用这些函数进行底层寄存器操作。
+底层 SPI 原语与寄存器访问。公共 API 已线程安全（内部队列串行化）。当高层 UART API 没有暴露你需要的功能时，可使用这些函数进行底层寄存器操作。
 
 | 函数 | 说明 |
 |------|------|
-| `ch9434_write_reg(addr, val)` | 写入 8 位寄存器（完整地址） |
-| `ch9434_read_reg(addr, val)` | 读取 8 位寄存器（完整地址） |
-| `ch9434_modify_reg(addr, clear, set)` | 读-改-写寄存器位 |
-| `ch9434_uart_write_scr/read_scr(uart, ...)` | SCR 暂存寄存器 |
-| `ch9434_uart_write_lcr/read_lcr(uart, ...)` | LCR 线路控制寄存器 |
-| `ch9434_uart_write_mcr/read_mcr(uart, ...)` | MCR 调制解调器控制寄存器 |
-| `ch9434_uart_read_lsr(uart, val)` | LSR 线路状态寄存器（只读） |
-| `ch9434_uart_read_iir(uart, val)` | IIR 中断标识寄存器（只读） |
-| `ch9434_uart_write_dll/dlm(uart, val)` | DLL/DLM 除数锁存寄存器 |
-| `ch9434_uart_get_rx_fifo_len(uart, lo, hi)` | RX FIFO 已用字节数 |
-| `ch9434_uart_get_tx_fifo_len(uart, lo, hi)` | TX FIFO 空闲字节数 |
-| `ch9434_uart_write_fifo(uart, data, len)` | 写入 TX FIFO |
-| `ch9434_uart_read_fifo(uart, data, len)` | 读取 RX FIFO |
-| `ch9434_write_clk_ctrl(val)` | 全局时钟控制寄存器 |
+| `ch9434_hw_init()` | 初始化 SPI 总线 + 服务任务（`ch9434_chip_init` 会自动调用） |
+| `ch9434_hw_deinit()` | 释放 SPI 总线与服务任务 |
+| `ch9434_hw_write_reg(reg, val)` | 写入单个寄存器字节 |
+| `ch9434_hw_read_reg(reg, val)` | 读取单个寄存器字节 |
+| `ch9434_hw_modify_reg(reg, clear, set)` | 读-改-写寄存器位 |
+| `ch9434_hw_write_bytes(reg, data, len)` | 批量 FIFO 写入（多字节） |
+| `ch9434_hw_read_bytes(reg, data, len)` | 批量 FIFO 读取（指定长度） |
+| `ch9434_hw_get_fifo_len(uart, is_tx, len)` | 合并请求查询 FIFO 长度（RX=已用, TX=空闲） |
+| `ch9434_hw_read_fifo(uart, data, max, out)` | 合并请求查长度 + 读数据（仅 RX） |
 
 ### 寄存器定义（ch9434_regs.h）
 
@@ -295,22 +266,18 @@ typedef struct {
 - 子 UART 寄存器基址偏移（每路 0x10 步长）
 - RBR/THR、IER、IIR/FCR、LCR、MCR、LSR、MSR、SCR、DLL/DLM 寄存器定义
 - LSR、LCR、FCR、MCR、IER、IIR 等位定义
-- 全局寄存器：TNOW_CTRL、FIFO_CTRL、CLK_CTRL、SLEEP_MOD 等
+- 全局寄存器：FIFO_CTRL、CLK_CTRL、SLEEP_MOD 等
 
 ## 并发模型
 
 所有公共 API 调用都经过相同的流程：
 
-1. 调用方构造 `spi_req_t` 并推入 FreeRTOS 队列。
+1. 调用方构造 `hw_req_t` 并推入 FreeRTOS 队列。
 2. 调用方在 `ulTaskNotifyTake` 上阻塞（轻量同步，无互斥锁）。
-3. 单一专用的 **SPI 服务任务**（`spi_svc`，默认优先级 10）从队列取出请求
-   并原子地执行。
+3. 单一专用的 **SPI 服务任务**（`ch9434_hw`，默认优先级 10）从队列取出请求并原子地执行。
 4. 服务任务完成后通过 `xTaskNotifyGive` 通知调用方。
 
-由于只有这一个任务会接触 SPI 硬件，因此永远不会出现并发
-`spi_device_transmit` 调用 —— 早期基于互斥锁方案中出现的断言失败在结构上
-即不可能发生。批量 FIFO 传输作为单个队列条目提交，因此执行过程不会与
-其他 UART 的数据流交错。
+由于只有这一个任务会接触 SPI 硬件，因此永远不会出现并发 `spi_device_transmit` 调用 —— 早期基于互斥锁方案中出现的断言失败在结构上即不可能发生。批量 FIFO 传输作为单个队列条目提交，因此执行过程不会与其他 UART 的数据流交错。
 
 ### SPI 时序实现
 
@@ -321,13 +288,9 @@ CH9434A 要求数据手册指定的精确时序：
 | 写寄存器 | CS 低 → [地址] → **1us** → [数据] → **3us** → CS 高 |
 | 读寄存器 | CS 低 → [地址] → **3us** → [0xFF→数据] → **1us** → CS 高 |
 
-CS 信号由 GPIO 手动控制（不使用 SPI 硬件 CS），地址和数据分两次
-`spi_device_transmit` 调用发送，中间插入 `ets_delay_us()` 延时。
-这样可以在任意 SPI 时钟频率下保证芯片时序要求，使时钟可达 16 MHz 上限。
+CS 信号由 GPIO 手动控制（不使用 SPI 硬件 CS），地址和数据分两次 `spi_device_transmit` 调用发送，中间插入 `ets_delay_us()` 延时。这样可以在任意 SPI 时钟频率下保证芯片时序要求，使时钟可达 16 MHz 上限。
 
-> **注**：原方案将地址+数据作为单次 16 位事务连续发送，仅能在 200kHz
-> 下侥幸工作（单字节 40us 自然满足时序）。频率升高后字节间隔不足 3us，
-> 导致读操作返回错误数据。当前方案已修复此问题。
+> **注**：原方案将地址+数据作为单次 16 位事务连续发送，仅能在 200kHz 下侥幸工作（单字节 40us 自然满足时序）。频率升高后字节间隔不足 3us，导致读操作返回错误数据。当前方案已修复此问题。
 
 ### 请求类型
 
@@ -342,15 +305,12 @@ CS 信号由 GPIO 手动控制（不使用 SPI 硬件 CS），地址和数据分
 | `GET_FIFO_LEN` | 查询 RX/TX FIFO 长度（合并 3 步） | 1 | 6 |
 | `READ_FIFO` | 查长度 + 读数据（合并 4 步） | 1 | 6 + 2N |
 
-> **注**：每次寄存器访问需 2 次 SPI 传输（地址字节 + 数据字节），
-> 中间插入 1us/3us 延时满足 CH9434A 时序要求。这是手动 CS 控制 +
-> 两阶段发送方案的必要代价，换取的是 SPI 时钟可提升至 16 MHz。
+> **注**：每次寄存器访问需 2 次 SPI 传输（地址字节 + 数据字节），中间插入 1us/3us 延时满足 CH9434A 时序要求。这是手动 CS 控制 + 两阶段发送方案的必要代价，换取的是 SPI 时钟可提升至 16 MHz。
 
-**优化亮点**：`GET_FIFO_LEN` 和 `READ_FIFO` 是合并请求，将原本需要多次队列切换
-的操作压缩为单次，在多任务大数据量场景下显著减少上下文切换开销。
+**优化亮点**：`GET_FIFO_LEN` 和 `READ_FIFO` 是合并请求，将原本需要多次队列切换的操作压缩为单次，在多任务大数据量场景下显著减少上下文切换开销。
 对比优化前：
-- `uget_rx_fifo_len`：3 次队列切换 → **1 次**（减少 67%）
-- `uart_read`：4 次队列切换 → **1 次**（减少 75%）
+- `available()` / `tx_free()`：3 次队列切换 → **1 次**（减少 67%）
+- `uart_read()`：4 次队列切换 → **1 次**（减少 75%）
 
 ### TX 流控
 
@@ -385,4 +345,4 @@ CS 信号由 GPIO 手动控制（不使用 SPI 硬件 CS），地址和数据分
 
 ## 许可证
 
-Apache License 2.0，详见 [LICENSE](LICENSE)。
+Apache License 2.0，详见 [LICENSE](esp_ch9434/LICENSE)。

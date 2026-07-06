@@ -6,15 +6,13 @@
  * DLL_DLM = sys_frequency / 8 / baud
  * （芯片在应用 16 位除数前，内部先将参考时钟除以 8）。
  */
-#include <string.h>
 #include "esp_log.h"
 #include "rom/ets_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #include "ch9434_uart.h"
-#include "ch9434_drv.h"
-#include "ch9434_spi.h"
+#include "ch9434_regs.h"
 
 #define TAG "ch9434_uart"
 
@@ -27,8 +25,7 @@
 
 /* TX FIFO 容量（CH9434A 为 1536 字节）。 */
 #define CH9434_TX_FIFO_SIZE       1536U
-/* RX FIFO 容量（CH9434A 为 256 字节）。 */
-#define CH9434_RX_FIFO_SIZE       256U
+
 
 /* TX 流控等待的最小间隔（毫秒）。当 TX FIFO 空间不足时，
  * 每次重试前等待的时间。 */
@@ -51,7 +48,7 @@
 
 esp_err_t ch9434_chip_init(void)
 {
-    esp_err_t ret = ch9434_spi_bus_init();
+    esp_err_t ret = ch9434_hw_init();
     if (ret != ESP_OK) {
         return ret;
     }
@@ -63,7 +60,7 @@ esp_err_t ch9434_chip_init(void)
 
     /* （时钟配置暂时保留芯片默认值；确认基本 SPI 通信正常后
      * 再重新启用倍频器。） */
-    ret = ch9434_write_clk_ctrl(0x00);
+    ret = ch9434_hw_write_reg(CH9434_CLK_CTRL_CFG, 0x00);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "写入 CLK_CTRL_CFG 失败");
         return ret;
@@ -71,12 +68,12 @@ esp_err_t ch9434_chip_init(void)
     ets_delay_us(50000);
 
     /* SPI 快速自检：向 UART0 SCR 写入 0x55 并回读。 */
-    ret = ch9434_uart_write_scr(CH9434_UART0, 0x55);
+    ret = ch9434_hw_write_reg(CH9434_ADDR_SCR(CH9434_UART0), 0x55);
     if (ret != ESP_OK) {
         return ret;
     }
     uint8_t v = 0;
-    ret = ch9434_uart_read_scr(CH9434_UART0, &v);
+    ret = ch9434_hw_read_reg(CH9434_ADDR_SCR(CH9434_UART0), &v);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -86,11 +83,11 @@ esp_err_t ch9434_chip_init(void)
     }
 
     /* 再换一个值确认。 */
-    ret = ch9434_uart_write_scr(CH9434_UART0, 0xA3);
+    ret = ch9434_hw_write_reg(CH9434_ADDR_SCR(CH9434_UART0), 0xA3);
     if (ret != ESP_OK) {
         return ret;
     }
-    ret = ch9434_uart_read_scr(CH9434_UART0, &v);
+    ret = ch9434_hw_read_reg(CH9434_ADDR_SCR(CH9434_UART0), &v);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -104,9 +101,13 @@ esp_err_t ch9434_chip_init(void)
      * 意外回显到 FIFO 中的数据）。 */
     for (int u = 0; u < CH9434_UART_COUNT; u++) {
         uint8_t junk[64];
+        uint16_t total = 0;
         uint16_t got = 0;
-        ch9434_uart_read(u, junk, sizeof(junk), &got);
-        ESP_LOGI(TAG, "排空 UART%d: %u 字节", u, got);
+        do {
+            ch9434_uart_read(u, junk, sizeof(junk), &got);
+            total += got;
+        } while (got > 0);
+        ESP_LOGI(TAG, "排空 UART%d: %u 字节", u, total);
     }
 
     ESP_LOGI(TAG, "CH9434 通信正常（SCR 测试通过）");
@@ -124,7 +125,7 @@ esp_err_t ch9434_uart_set_config(uint8_t uart, const ch9434_uart_config_t *cfg)
     }
 
     /* 重新配置期间禁用所有中断。 */
-    esp_err_t ret = ch9434_write_reg(CH9434_ADDR_IER(uart), 0x00);
+    esp_err_t ret = ch9434_hw_write_reg(CH9434_ADDR_IER(uart), 0x00);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -148,30 +149,30 @@ esp_err_t ch9434_uart_set_config(uint8_t uart, const ch9434_uart_config_t *cfg)
     }
 
     /* 设置 DLAB 以访问 DLL/DLM。 */
-    ret = ch9434_write_reg(CH9434_ADDR_LCR(uart), (uint8_t)(lcr | CH9434_UARTx_BIT_DLAB));
+    ret = ch9434_hw_write_reg(CH9434_ADDR_LCR(uart), (uint8_t)(lcr | CH9434_UARTx_BIT_DLAB));
     if (ret != ESP_OK) {
         return ret;
     }
 
-    /* 除数 = sys_frequency / 8 / baud。使用四舍五入。 */
-    uint32_t div = (10UL * CH9434_SYS_FREQ_HZ / 8U / (uint32_t)cfg->baud + 5U) / 10U;
+    /* 除数 = sys_frequency / 8 / baud。使用标准四舍五入。 */
+    uint32_t div = (CH9434_SYS_FREQ_HZ / 8U + (uint32_t)cfg->baud / 2U) / (uint32_t)cfg->baud;
     if (div == 0) {
         div = 1;
     }
     if (div > 0xFFFF) {
         div = 0xFFFF;
     }
-    ret = ch9434_uart_write_dll(uart, (uint8_t)(div & 0xFF));
+    ret = ch9434_hw_write_reg(CH9434_ADDR_DLL(uart), (uint8_t)(div & 0xFF));
     if (ret != ESP_OK) {
         return ret;
     }
-    ret = ch9434_uart_write_dlm(uart, (uint8_t)((div >> 8) & 0xFF));
+    ret = ch9434_hw_write_reg(CH9434_ADDR_DLM(uart), (uint8_t)((div >> 8) & 0xFF));
     if (ret != ESP_OK) {
         return ret;
     }
 
     /* 清除 DLAB 并写入最终 LCR。 */
-    ret = ch9434_write_reg(CH9434_ADDR_LCR(uart), lcr);
+    ret = ch9434_hw_write_reg(CH9434_ADDR_LCR(uart), lcr);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -181,7 +182,7 @@ esp_err_t ch9434_uart_set_config(uint8_t uart, const ch9434_uart_config_t *cfg)
     if (cfg->use_fifo) {
         fcr |= CH9434_FCR_ENABLE | CH9434_FCR_TRIG_8;
     }
-    ret = ch9434_write_reg(CH9434_ADDR_FCR(uart), fcr);
+    ret = ch9434_hw_write_reg(CH9434_ADDR_FCR(uart), fcr);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -193,13 +194,13 @@ esp_err_t ch9434_uart_set_config(uint8_t uart, const ch9434_uart_config_t *cfg)
     if (cfg->hw_flow_ctrl) {
         mcr |= CH9434_MCR_AFE;
     }
-    ret = ch9434_write_reg(CH9434_ADDR_MCR(uart), mcr);
+    ret = ch9434_hw_write_reg(CH9434_ADDR_MCR(uart), mcr);
     if (ret != ESP_OK) {
         return ret;
     }
 
     /* 使能 RX 中断，以便芯片可以标记收到的数据。 */
-    ret = ch9434_write_reg(CH9434_ADDR_IER(uart), CH9434_IER_RX);
+    ret = ch9434_hw_write_reg(CH9434_ADDR_IER(uart), CH9434_IER_RX);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -240,7 +241,7 @@ esp_err_t ch9434_uart_write(uint8_t uart, const uint8_t *data, uint16_t len)
          * 注意：CH9434 的 TX FIFO 长度寄存器返回的是空闲字节数，
          * 而不是已用字节数（与 RX FIFO 方向相反）。 */
         uint16_t tx_free = 0;
-        esp_err_t ret = ch9434_spi_get_fifo_len(uart, true, &tx_free);
+        esp_err_t ret = ch9434_hw_get_fifo_len(uart, true, &tx_free);
         if (ret != ESP_OK) {
             return ret;
         }
@@ -270,7 +271,7 @@ esp_err_t ch9434_uart_write(uint8_t uart, const uint8_t *data, uint16_t len)
             chunk = CH9434_TX_CHUNK_SIZE;
         }
 
-        ret = ch9434_uart_write_fifo(uart, &data[offset], chunk);
+        ret = ch9434_hw_write_bytes(CH9434_ADDR_THR(uart), &data[offset], chunk);
         if (ret != ESP_OK) {
             return ret;
         }
@@ -290,7 +291,7 @@ esp_err_t ch9434_uart_read(uint8_t uart, uint8_t *data, uint16_t max_len, uint16
         return ESP_OK;
     }
 
-    return ch9434_spi_read_fifo(uart, data, max_len, out_len);
+    return ch9434_hw_read_fifo(uart, data, max_len, out_len);
 }
 
 esp_err_t ch9434_uart_available(uint8_t uart, uint16_t *count)
@@ -298,7 +299,7 @@ esp_err_t ch9434_uart_available(uint8_t uart, uint16_t *count)
     if (uart >= CH9434_UART_COUNT || count == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    return ch9434_spi_get_fifo_len(uart, false, count);
+    return ch9434_hw_get_fifo_len(uart, false, count);
 }
 
 esp_err_t ch9434_uart_tx_free(uint8_t uart, uint16_t *count)
@@ -308,7 +309,7 @@ esp_err_t ch9434_uart_tx_free(uint8_t uart, uint16_t *count)
     }
     /* CH9434 TX FIFO 长度寄存器直接返回空闲字节数。 */
     uint16_t tx_free = 0;
-    esp_err_t ret = ch9434_spi_get_fifo_len(uart, true, &tx_free);
+    esp_err_t ret = ch9434_hw_get_fifo_len(uart, true, &tx_free);
     if (ret != ESP_OK) {
         return ret;
     }

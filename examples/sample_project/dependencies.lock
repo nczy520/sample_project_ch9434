@@ -5,6 +5,6 @@ dependencies:
     version: 6.0.2
 direct_dependencies:
 - idf
-manifest_hash: c2d14f698ed763ed3a79054c12f86e12d75750a1c7291f77824ed88cc1feecc7
+manifest_hash: 85005bd275c71e9806dd854bb39ee150f06012dc532a711191e25640a402719a
 target: esp32s3
 version: 3.0.0

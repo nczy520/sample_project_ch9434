@@ -1,5 +1,5 @@
 /*
- * CH9434 SPI 底层实现。
+ * CH9434 硬件访问层 - SPI 底层实现。
  *
  * CH9434A 协议每次寄存器访问使用一个 CS 低脉冲，脉冲内包含 2 字节
  *（地址字节 + 中间延时 + 数据字节 + CS 拉高前延时）。
@@ -12,7 +12,7 @@
  * 实现方式：CS 引脚由 GPIO 手动控制（不使用 SPI 硬件 CS），
  * 地址和数据分两次 spi_device_transmit 发送，中间插入 ets_delay_us()
  * 满足芯片时序要求。这使得 SPI 时钟可达数据手册标称的 16 MHz
- * （在硬件布线允许的前提下），而连续 2 字节发送方案在高频下会因
+ *（在硬件布线允许的前提下），而连续 2 字节发送方案在高频下会因
  * 地址-数据间延时不足导致读数据错误。
  *
  * --- 并发模型 ---
@@ -21,7 +21,6 @@
  * 这样保证了同一时间只有一个任务访问 SPI 外设，无需显式互斥锁。
  */
 
-#include <string.h>
 #include "esp_log.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -32,10 +31,10 @@
 #include "freertos/semphr.h"
 #include "sdkconfig.h"
 
-#include "ch9434_spi.h"
+#include "ch9434_hw.h"
 #include "ch9434_regs.h"
 
-#define TAG "ch9434_spi"
+#define TAG "ch9434_hw"
 
 /* 引脚分配 - 通过 Kconfig 配置（menuconfig -> CH9434 配置）。 */
 #define PIN_NUM_MOSI        CONFIG_CH9434_PIN_MOSI
@@ -56,26 +55,26 @@
 #define CH9434_FIFO_CTRL_SETTLE_US     5
 
 /* ---------- 基于队列的 SPI 串行化 ---------- */
-#define SPI_QUEUE_SIZE      CONFIG_CH9434_SPI_QUEUE_SIZE
-#define SPI_TASK_STACK      CONFIG_CH9434_SPI_TASK_STACK
-#define SPI_TASK_PRIO       CONFIG_CH9434_SPI_TASK_PRIO
+#define HW_QUEUE_SIZE       CONFIG_CH9434_SPI_QUEUE_SIZE
+#define HW_TASK_STACK       CONFIG_CH9434_SPI_TASK_STACK
+#define HW_TASK_PRIO        CONFIG_CH9434_SPI_TASK_PRIO
 
-/* SPI 时钟 - 通过 Kconfig 配置。头文件仍然导出 CH9434_SPI_CLOCK_HZ
+/* SPI 时钟 - 通过 Kconfig 配置。头文件仍然导出 CH9434_HW_SPI_CLOCK_HZ
  * 宏供客户代码读取；内部始终使用 Kconfig 值以保持两者同步。 */
-#undef  CH9434_SPI_CLOCK_HZ
-#define CH9434_SPI_CLOCK_HZ CONFIG_CH9434_SPI_CLOCK_HZ
+#undef  CH9434_HW_SPI_CLOCK_HZ
+#define CH9434_HW_SPI_CLOCK_HZ CONFIG_CH9434_SPI_CLOCK_HZ
 
 typedef enum {
-    SPI_REQ_WRITE_REG,
-    SPI_REQ_READ_REG,
-    SPI_REQ_WRITE_BYTES,
-    SPI_REQ_READ_BYTES,
-    SPI_REQ_GET_FIFO_LEN,
-    SPI_REQ_READ_FIFO,
-} spi_req_type_t;
+    HW_REQ_WRITE_REG,
+    HW_REQ_READ_REG,
+    HW_REQ_WRITE_BYTES,
+    HW_REQ_READ_BYTES,
+    HW_REQ_GET_FIFO_LEN,
+    HW_REQ_READ_FIFO,
+} hw_req_type_t;
 
 typedef struct {
-    spi_req_type_t  type;
+    hw_req_type_t   type;
     uint8_t         reg;
     uint8_t         value;          /* WRITE_REG: 待写入字节          */
     uint8_t        *out_value;      /* READ_REG:  输出指针            */
@@ -88,22 +87,22 @@ typedef struct {
     bool            is_tx;          /* GET_FIFO_LEN: true=TX, false=RX */
     esp_err_t       result;         /* 由服务任务填充                 */
     TaskHandle_t    caller;         /* 完成后通知的任务               */
-} spi_req_t;
+} hw_req_t;
 
 static spi_device_handle_t s_dev = NULL;
 static bool s_initialized = false;
-static QueueHandle_t s_spi_queue = NULL;
-static TaskHandle_t s_spi_task_handle = NULL;
+static QueueHandle_t s_hw_queue = NULL;
+static TaskHandle_t s_hw_task_handle = NULL;
 static SemaphoreHandle_t s_init_mutex = NULL;
 
-/* 前置声明 - 在 bus_init 之后定义。 */
-static void spi_service_task(void *arg);
+/* 前置声明 - 在 hw_init 之后定义。 */
+static void hw_service_task(void *arg);
 
 /* -------------------------------------------------------------------------- */
-/*                          SPI 总线初始化 / 反初始化                         */
+/*                          硬件初始化 / 反初始化                             */
 /* -------------------------------------------------------------------------- */
 
-esp_err_t ch9434_spi_bus_init(void)
+esp_err_t ch9434_hw_init(void)
 {
     if (s_init_mutex == NULL) {
         s_init_mutex = xSemaphoreCreateMutex();
@@ -139,10 +138,10 @@ esp_err_t ch9434_spi_bus_init(void)
     };
 
     spi_device_interface_config_t dev_cfg = {
-        .clock_speed_hz = CH9434_SPI_CLOCK_HZ,
+        .clock_speed_hz = CH9434_HW_SPI_CLOCK_HZ,
         .mode           = 0,                   /* SPI 模式 0 (CPOL=0, CPHA=0) 参考 WCH EVT */
         .spics_io_num   = -1,                  /* 手动控制 CS，以便在地址和数据之间插入延时 */
-        .queue_size     = 4,
+        .queue_size     = 1,
         .flags          = 0,
     };
 
@@ -161,9 +160,9 @@ esp_err_t ch9434_spi_bus_init(void)
         return ret;
     }
 
-    s_spi_queue = xQueueCreate(SPI_QUEUE_SIZE, sizeof(spi_req_t));
-    if (s_spi_queue == NULL) {
-        ESP_LOGE(TAG, "创建 SPI 请求队列失败");
+    s_hw_queue = xQueueCreate(HW_QUEUE_SIZE, sizeof(hw_req_t *));
+    if (s_hw_queue == NULL) {
+        ESP_LOGE(TAG, "创建 HW 请求队列失败");
         spi_bus_remove_device(s_dev);
         spi_bus_free(SPI_HOST_CH9434);
         s_dev = NULL;
@@ -171,11 +170,11 @@ esp_err_t ch9434_spi_bus_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    if (xTaskCreate(spi_service_task, "spi_svc", SPI_TASK_STACK,
-                    NULL, SPI_TASK_PRIO, &s_spi_task_handle) != pdPASS) {
-        ESP_LOGE(TAG, "创建 SPI 服务任务失败");
-        vQueueDelete(s_spi_queue);
-        s_spi_queue = NULL;
+    if (xTaskCreate(hw_service_task, "ch9434_hw", HW_TASK_STACK,
+                    NULL, HW_TASK_PRIO, &s_hw_task_handle) != pdPASS) {
+        ESP_LOGE(TAG, "创建 HW 服务任务失败");
+        vQueueDelete(s_hw_queue);
+        s_hw_queue = NULL;
         spi_bus_remove_device(s_dev);
         spi_bus_free(SPI_HOST_CH9434);
         s_dev = NULL;
@@ -185,13 +184,13 @@ esp_err_t ch9434_spi_bus_init(void)
 
     s_initialized = true;
     xSemaphoreGive(s_init_mutex);
-    ESP_LOGI(TAG, "CH9434 SPI 总线就绪 (MOSI=%d MISO=%d SCK=%d CS=%d @%d Hz, 队列=%d)",
+    ESP_LOGI(TAG, "CH9434 硬件就绪 (MOSI=%d MISO=%d SCK=%d CS=%d @%d Hz, 队列=%d)",
              PIN_NUM_MOSI, PIN_NUM_MISO, PIN_NUM_SCK, PIN_NUM_CS,
-             CH9434_SPI_CLOCK_HZ, SPI_QUEUE_SIZE);
+             CH9434_HW_SPI_CLOCK_HZ, HW_QUEUE_SIZE);
     return ESP_OK;
 }
 
-void ch9434_spi_bus_deinit(void)
+void ch9434_hw_deinit(void)
 {
     if (s_init_mutex == NULL) {
         return;
@@ -202,13 +201,13 @@ void ch9434_spi_bus_deinit(void)
         xSemaphoreGive(s_init_mutex);
         return;
     }
-    if (s_spi_task_handle) {
-        vTaskDelete(s_spi_task_handle);
-        s_spi_task_handle = NULL;
+    if (s_hw_task_handle) {
+        vTaskDelete(s_hw_task_handle);
+        s_hw_task_handle = NULL;
     }
-    if (s_spi_queue) {
-        vQueueDelete(s_spi_queue);
-        s_spi_queue = NULL;
+    if (s_hw_queue) {
+        vQueueDelete(s_hw_queue);
+        s_hw_queue = NULL;
     }
     spi_bus_remove_device(s_dev);
     spi_bus_free(SPI_HOST_CH9434);
@@ -220,14 +219,13 @@ void ch9434_spi_bus_deinit(void)
 /* -------------------------------------------------------------------------- */
 /*                       底层 SPI 传输（无锁）                                 */
 /*                                                                            */
-/* 仅由 spi_service_task 调用，因此此处不需要任何同步。                       */
+/* 仅由 hw_service_task 调用，因此此处不需要任何同步。                        */
 /* -------------------------------------------------------------------------- */
 
-static esp_err_t ch9434_spi_xfer2(uint8_t op, uint8_t reg, uint8_t data_byte,
-                                  uint8_t *rx_byte, uint8_t post_delay_us)
+static esp_err_t ch9434_hw_xfer2(uint8_t op, uint8_t reg, uint8_t data_byte,
+                                  uint8_t *rx_byte, uint32_t post_delay_us)
 {
     uint8_t addr = (uint8_t)(op | reg);
-    uint8_t rx = 0;
 
     gpio_set_level(PIN_NUM_CS, 0);
 
@@ -272,71 +270,71 @@ static esp_err_t ch9434_spi_xfer2(uint8_t op, uint8_t reg, uint8_t data_byte,
 }
 
 /* -------------------------------------------------------------------------- */
-/*                          SPI 服务任务                                       */
+/*                          硬件服务任务                                       */
 /*                                                                            */
 /* 唯一的消费者，从请求队列中取出并原子地执行每个事务。                       */
 /* 因为只有此任务接触 SPI 硬件，所以永远不会出现并发访问。                    */
 /* -------------------------------------------------------------------------- */
 
-static void spi_service_task(void *arg)
+static void hw_service_task(void *arg)
 {
     (void)arg;
-    spi_req_t req;
+    hw_req_t *req = NULL;
 
-    ESP_LOGI(TAG, "SPI 服务任务已启动 (优先级=%d, 队列=%d)",
-             SPI_TASK_PRIO, SPI_QUEUE_SIZE);
+    ESP_LOGI(TAG, "HW 服务任务已启动 (优先级=%d, 队列=%d)",
+             HW_TASK_PRIO, HW_QUEUE_SIZE);
 
     while (1) {
-        if (xQueueReceive(s_spi_queue, &req, portMAX_DELAY) != pdTRUE) {
+        if (xQueueReceive(s_hw_queue, &req, portMAX_DELAY) != pdTRUE) {
             continue;
         }
 
-        switch (req.type) {
-        case SPI_REQ_WRITE_REG:
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_WRITE, req.reg,
-                                          req.value, NULL,
+        switch (req->type) {
+        case HW_REQ_WRITE_REG:
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_WRITE, req->reg,
+                                          req->value, NULL,
                                           CH9434A_DELAY_DATA_TO_CS_US);
             break;
 
-        case SPI_REQ_READ_REG:
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, req.reg,
-                                          0xFF, req.out_value,
+        case HW_REQ_READ_REG:
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_READ, req->reg,
+                                          0xFF, req->out_value,
                                           CH9434A_DELAY_READ_DONE_US);
             break;
 
-        case SPI_REQ_WRITE_BYTES:
-            req.result = ESP_OK;
-            for (uint16_t i = 0; i < req.len; i++) {
-                req.result = ch9434_spi_xfer2(CH9434_REG_OP_WRITE, req.reg,
-                                              req.wdata[i], NULL,
+        case HW_REQ_WRITE_BYTES:
+            req->result = ESP_OK;
+            for (uint16_t i = 0; i < req->len; i++) {
+                req->result = ch9434_hw_xfer2(CH9434_REG_OP_WRITE, req->reg,
+                                              req->wdata[i], NULL,
                                               CH9434A_DELAY_DATA_TO_CS_US);
-                if (req.result != ESP_OK) {
+                if (req->result != ESP_OK) {
                     break;
                 }
             }
             break;
 
-        case SPI_REQ_READ_BYTES:
-            req.result = ESP_OK;
-            for (uint16_t i = 0; i < req.len; i++) {
-                req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, req.reg,
-                                              0xFF, &req.rdata[i],
+        case HW_REQ_READ_BYTES:
+            req->result = ESP_OK;
+            for (uint16_t i = 0; i < req->len; i++) {
+                req->result = ch9434_hw_xfer2(CH9434_REG_OP_READ, req->reg,
+                                              0xFF, &req->rdata[i],
                                               CH9434A_DELAY_READ_DONE_US);
-                if (req.result != ESP_OK) {
+                if (req->result != ESP_OK) {
                     break;
                 }
             }
             break;
 
-        case SPI_REQ_GET_FIFO_LEN: {
-            uint8_t fifo_ctrl = (uint8_t)(req.uart & CH9434_FIFO_CTRL_UART_MASK);
-            if (req.is_tx) {
+        case HW_REQ_GET_FIFO_LEN: {
+            uint8_t fifo_ctrl = (uint8_t)(req->uart & CH9434_FIFO_CTRL_UART_MASK);
+            if (req->is_tx) {
                 fifo_ctrl |= CH9434_FIFO_CTRL_TR;
             }
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_WRITE, CH9434_FIFO_CTRL,
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_WRITE, CH9434_FIFO_CTRL,
                                           fifo_ctrl, NULL,
                                           CH9434A_DELAY_DATA_TO_CS_US);
-            if (req.result != ESP_OK) {
+            if (req->result != ESP_OK) {
                 break;
             }
             /* 等待芯片根据 FIFO_CTRL 选定的 UART/方向更新 FIFO_CTRL_L/H 计数器。
@@ -344,66 +342,66 @@ static void spi_service_task(void *arg)
              * 但芯片需要约 5us 才能将所选 FIFO 计数器锁存到 L/H 寄存器。 */
             ets_delay_us(CH9434_FIFO_CTRL_SETTLE_US);
             uint8_t lo = 0, hi = 0;
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_L,
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_L,
                                           0xFF, &lo,
                                           CH9434A_DELAY_READ_DONE_US);
-            if (req.result != ESP_OK) {
+            if (req->result != ESP_OK) {
                 break;
             }
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_H,
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_H,
                                           0xFF, &hi,
                                           CH9434A_DELAY_READ_DONE_US);
-            if (req.result == ESP_OK && req.fifo_len) {
-                *req.fifo_len = (uint16_t)((hi << 8) | lo);
+            if (req->result == ESP_OK && req->fifo_len) {
+                *req->fifo_len = (uint16_t)((hi << 8) | lo);
             }
             break;
         }
 
-        case SPI_REQ_READ_FIFO: {
-            uint8_t fifo_ctrl = (uint8_t)(req.uart & CH9434_FIFO_CTRL_UART_MASK);
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_WRITE, CH9434_FIFO_CTRL,
+        case HW_REQ_READ_FIFO: {
+            uint8_t fifo_ctrl = (uint8_t)(req->uart & CH9434_FIFO_CTRL_UART_MASK);
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_WRITE, CH9434_FIFO_CTRL,
                                           fifo_ctrl, NULL,
                                           CH9434A_DELAY_DATA_TO_CS_US);
-            if (req.result != ESP_OK) {
+            if (req->result != ESP_OK) {
                 break;
             }
-            /* 同上：等待 FIFO_CTRL_L/H 更新（见 SPI_REQ_GET_FIFO_LEN）。 */
+            /* 同上：等待 FIFO_CTRL_L/H 更新（见 HW_REQ_GET_FIFO_LEN）。 */
             ets_delay_us(CH9434_FIFO_CTRL_SETTLE_US);
             uint8_t lo = 0, hi = 0;
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_L,
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_L,
                                           0xFF, &lo,
                                           CH9434A_DELAY_READ_DONE_US);
-            if (req.result != ESP_OK) {
+            if (req->result != ESP_OK) {
                 break;
             }
-            req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_H,
+            req->result = ch9434_hw_xfer2(CH9434_REG_OP_READ, CH9434_FIFO_CTRL_H,
                                           0xFF, &hi,
                                           CH9434A_DELAY_READ_DONE_US);
-            if (req.result != ESP_OK) {
+            if (req->result != ESP_OK) {
                 break;
             }
             uint16_t available = (uint16_t)((hi << 8) | lo);
-            if (available > req.len) {
-                available = req.len;
+            if (available > req->len) {
+                available = req->len;
             }
             ESP_LOGD(TAG, "READ_FIFO uart=%u RX lo=0x%02X hi=0x%02X -> available=%u (cap=%u)",
-                     (unsigned)req.uart, lo, hi, (unsigned)available, (unsigned)req.len);
-            if (req.out_len) {
-                *req.out_len = available;
+                     (unsigned)req->uart, lo, hi, (unsigned)available, (unsigned)req->len);
+            if (req->out_len) {
+                *req->out_len = available;
             }
             if (available == 0) {
-                req.result = ESP_OK;
+                req->result = ESP_OK;
                 break;
             }
-            uint8_t rbr_addr = CH9434_ADDR_RBR(req.uart);
-            req.result = ESP_OK;
+            uint8_t rbr_addr = CH9434_ADDR_RBR(req->uart);
+            req->result = ESP_OK;
             for (uint16_t i = 0; i < available; i++) {
-                req.result = ch9434_spi_xfer2(CH9434_REG_OP_READ, rbr_addr,
-                                              0xFF, &req.rdata[i],
+                req->result = ch9434_hw_xfer2(CH9434_REG_OP_READ, rbr_addr,
+                                              0xFF, &req->rdata[i],
                                               CH9434A_DELAY_READ_DONE_US);
-                if (req.result != ESP_OK) {
-                    if (req.out_len) {
-                        *req.out_len = i;
+                if (req->result != ESP_OK) {
+                    if (req->out_len) {
+                        *req->out_len = i;
                     }
                     break;
                 }
@@ -413,9 +411,9 @@ static void spi_service_task(void *arg)
         }
 
         /* 通知调用者事务已完成。
-         * req.result 由调用者从其栈副本中读取。 */
-        if (req.caller) {
-            xTaskNotifyGive(req.caller);
+         * req->result 由调用者从其栈副本中读取。 */
+        if (req->caller) {
+            xTaskNotifyGive(req->caller);
         }
     }
 }
@@ -425,35 +423,35 @@ static void spi_service_task(void *arg)
 /* -------------------------------------------------------------------------- */
 
 /* 辅助函数：将请求入队并阻塞，直到服务任务完成它。 */
-static esp_err_t spi_submit(spi_req_t *req)
+static esp_err_t hw_submit(hw_req_t *req)
 {
     req->caller = xTaskGetCurrentTaskHandle();
     /* 在等待前清除任何过期的通知。 */
     (void)ulTaskNotifyTake(pdTRUE, 0);
 
-    if (xQueueSend(s_spi_queue, req, portMAX_DELAY) != pdTRUE) {
+    if (xQueueSend(s_hw_queue, &req, portMAX_DELAY) != pdTRUE) {
         return ESP_FAIL;
     }
 
-    /* 阻塞直到 SPI 服务任务通知我们。 */
+    /* 阻塞直到 HW 服务任务通知我们。 */
     (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     return req->result;
 }
 
-esp_err_t ch9434_spi_write_reg(uint8_t reg, uint8_t val)
+esp_err_t ch9434_hw_write_reg(uint8_t reg, uint8_t val)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    spi_req_t req = {
-        .type  = SPI_REQ_WRITE_REG,
+    hw_req_t req = {
+        .type  = HW_REQ_WRITE_REG,
         .reg   = reg,
         .value = val,
     };
-    return spi_submit(&req);
+    return hw_submit(&req);
 }
 
-esp_err_t ch9434_spi_read_reg(uint8_t reg, uint8_t *val)
+esp_err_t ch9434_hw_read_reg(uint8_t reg, uint8_t *val)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -461,12 +459,26 @@ esp_err_t ch9434_spi_read_reg(uint8_t reg, uint8_t *val)
     if (val == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    spi_req_t req = {
-        .type      = SPI_REQ_READ_REG,
+    hw_req_t req = {
+        .type      = HW_REQ_READ_REG,
         .reg       = reg,
         .out_value = val,
     };
-    return spi_submit(&req);
+    return hw_submit(&req);
+}
+
+esp_err_t ch9434_hw_modify_reg(uint8_t reg, uint8_t clear_mask, uint8_t set_mask)
+{
+    uint8_t cur = 0;
+    esp_err_t ret = ch9434_hw_read_reg(reg, &cur);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    uint8_t new_val = (uint8_t)((cur & ~clear_mask) | set_mask);
+    if (new_val == cur) {
+        return ESP_OK;
+    }
+    return ch9434_hw_write_reg(reg, new_val);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -474,10 +486,10 @@ esp_err_t ch9434_spi_read_reg(uint8_t reg, uint8_t *val)
 /*                                                                            */
 /* CH9434A 没有真正的突发模式；FIFO 的每个字节都作为单独的（CS 低）          */
 /* 2 字节（地址+数据）事务传输。整个批量操作作为单个队列条目提交，            */
-/* 这样它在 SPI 服务任务内原子地执行，不会被其他任务交错。                    */
+/* 这样它在 HW 服务任务内原子地执行，不会被其他任务交错。                     */
 /* -------------------------------------------------------------------------- */
 
-esp_err_t ch9434_spi_write_bytes(uint8_t reg, const uint8_t *data, uint16_t len)
+esp_err_t ch9434_hw_write_bytes(uint8_t reg, const uint8_t *data, uint16_t len)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -485,16 +497,16 @@ esp_err_t ch9434_spi_write_bytes(uint8_t reg, const uint8_t *data, uint16_t len)
     if (data == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    spi_req_t req = {
-        .type  = SPI_REQ_WRITE_BYTES,
+    hw_req_t req = {
+        .type  = HW_REQ_WRITE_BYTES,
         .reg   = reg,
         .wdata = data,
         .len   = len,
     };
-    return spi_submit(&req);
+    return hw_submit(&req);
 }
 
-esp_err_t ch9434_spi_read_bytes(uint8_t reg, uint8_t *data, uint16_t len)
+esp_err_t ch9434_hw_read_bytes(uint8_t reg, uint8_t *data, uint16_t len)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -502,16 +514,16 @@ esp_err_t ch9434_spi_read_bytes(uint8_t reg, uint8_t *data, uint16_t len)
     if (data == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    spi_req_t req = {
-        .type  = SPI_REQ_READ_BYTES,
+    hw_req_t req = {
+        .type  = HW_REQ_READ_BYTES,
         .reg   = reg,
         .rdata = data,
         .len   = len,
     };
-    return spi_submit(&req);
+    return hw_submit(&req);
 }
 
-esp_err_t ch9434_spi_get_fifo_len(uint8_t uart, bool is_tx, uint16_t *fifo_len)
+esp_err_t ch9434_hw_get_fifo_len(uint8_t uart, bool is_tx, uint16_t *fifo_len)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -519,16 +531,16 @@ esp_err_t ch9434_spi_get_fifo_len(uint8_t uart, bool is_tx, uint16_t *fifo_len)
     if (uart >= CH9434_UART_COUNT || fifo_len == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    spi_req_t req = {
-        .type     = SPI_REQ_GET_FIFO_LEN,
+    hw_req_t req = {
+        .type     = HW_REQ_GET_FIFO_LEN,
         .uart     = uart,
         .is_tx    = is_tx,
         .fifo_len = fifo_len,
     };
-    return spi_submit(&req);
+    return hw_submit(&req);
 }
 
-esp_err_t ch9434_spi_read_fifo(uint8_t uart, uint8_t *data, uint16_t max_len, uint16_t *out_len)
+esp_err_t ch9434_hw_read_fifo(uint8_t uart, uint8_t *data, uint16_t max_len, uint16_t *out_len)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -540,12 +552,12 @@ esp_err_t ch9434_spi_read_fifo(uint8_t uart, uint8_t *data, uint16_t max_len, ui
     if (max_len == 0) {
         return ESP_OK;
     }
-    spi_req_t req = {
-        .type    = SPI_REQ_READ_FIFO,
+    hw_req_t req = {
+        .type    = HW_REQ_READ_FIFO,
         .uart    = uart,
         .rdata   = data,
         .len     = max_len,
         .out_len = out_len,
     };
-    return spi_submit(&req);
+    return hw_submit(&req);
 }

@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "ch9434_regs.h"
+#include "ch9434_hw.h"
 
 #ifdef __cplusplus
 extern "C" {

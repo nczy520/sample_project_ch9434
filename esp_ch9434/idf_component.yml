@@ -11,7 +11,7 @@
 ##       path: esp_ch9434
 ##       version: main
 
-version: "1.0.4"
+version: "1.1.0"
 
 ## 显式声明组件名（默认从目录名继承，此处保持一致以确保
 ## 被 ESP Component Registry 注册为 esp_ch9434 而非 ch9434）。
